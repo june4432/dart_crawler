@@ -32,8 +32,8 @@ REPORT_CODES = {
     "1": {"name": "사업보고서", "code": "11011"},
     "2": {"name": "반기보고서", "code": "11014"},
     "3": {"name": "분기보고서", "code": "11013"},
-    "4": {"name": "1분기보고서", "code": "11012"},
-    "5": {"name": "3분기보고서", "code": "11015"}
+    "4": {"name": "1분기보고서", "code": "11013", "quarter": "03"},  # 3월
+    "5": {"name": "3분기보고서", "code": "11013", "quarter": "09"}   # 9월
 }
 
 def get_corp_code(company_name: str) -> Optional[str]:
@@ -87,7 +87,7 @@ def get_consolidated_financial_notes(company_name: str, year: str, report_type: 
         
         # 2단계: 보고서 목록 조회
         print(f"\n2️⃣ {year}년도 보고서 목록 조회 중...")
-        reports = get_report_list(corp_code, year, REPORT_CODES[report_type]['code'])
+        reports = get_report_list(corp_code, year, report_type)
         if not reports:
             print(f"❌ {year}년도에 해당하는 보고서를 찾을 수 없습니다.")
             return None
@@ -130,10 +130,15 @@ def get_consolidated_financial_notes(company_name: str, year: str, report_type: 
         print(f"❌ 연결재무제표 주석 조회 중 오류: {e}")
         return None
 
-def get_report_list(corp_code: str, year: str, report_code: str) -> Optional[List[Dict]]:
+def get_report_list(corp_code: str, year: str, report_type_key: str) -> Optional[List[Dict]]:
     """특정 회사의 보고서 목록을 조회합니다."""
     # 여러 연도로 시도 (DART API는 공시 연도와 다를 수 있음)
     years_to_try = [year, str(int(year)-1), str(int(year)-2)]
+    
+    # 보고서 코드와 분기 정보 가져오기
+    report_info = REPORT_CODES[report_type_key]
+    report_code = report_info['code']
+    quarter_month = report_info.get('quarter', None)
     
     for try_year in years_to_try:
         print(f"   🔍 {try_year}년도로 시도 중...")
@@ -171,18 +176,31 @@ def get_report_list(corp_code: str, year: str, report_code: str) -> Optional[Lis
             target_reports = []
             for item in data.get('list', []):
                 report_name = item.get('report_nm', '')
+                rcept_dt = item.get('rcept_dt', '')  # 접수일자 (YYYYMMDD 형식)
+                
+                print(f"      📋 {report_code} {report_name} (접수일: {rcept_dt})")
                 
                 # 보고서 제목에 해당 유형이 포함되어 있는지 확인
                 if report_code == "11014" and "반기보고서" in report_name:
                     target_reports.append(item)
-                elif report_code == "11013" and "분기보고서" in report_name:
-                    target_reports.append(item)
                 elif report_code == "11011" and "사업보고서" in report_name:
                     target_reports.append(item)
-                elif report_code == "11012" and "1분기보고서" in report_name:
-                    target_reports.append(item)
-                elif report_code == "11015" and "3분기보고서" in report_name:
-                    target_reports.append(item)
+                elif report_code == "11013" and "분기보고서" in report_name:
+                    # 분기보고서의 경우 1분기/3분기 구분
+                    if quarter_month:
+                        # 접수일자에서 월 추출 (YYYYMMDD -> MM)
+                        if len(rcept_dt) >= 6:
+                            report_month = rcept_dt[4:6]
+                            # 1분기보고서: 03월 근처 (02~05월), 3분기보고서: 09월 근처 (08~11월)
+                            if quarter_month == "03" and report_month in ["02", "03", "04", "05"]:
+                                print(f"         🎯 1분기보고서 매칭 ({report_month}월)")
+                                target_reports.append(item)
+                            elif quarter_month == "09" and report_month in ["08", "09", "10", "11"]:
+                                print(f"         🎯 3분기보고서 매칭 ({report_month}월)")
+                                target_reports.append(item)
+                    else:
+                        # 일반 분기보고서 (모든 분기)
+                        target_reports.append(item)
             
             if target_reports:
                 print(f"      🎯 {len(target_reports)}개의 해당 보고서를 찾았습니다!")
@@ -289,6 +307,13 @@ def get_consolidated_notes_from_report(rcept_no: str) -> Optional[Dict]:
         print(f"      ❌ 하위 서류 조회 중 오류: {e}")
         return None
 
+def get_report_type_key(report_name: str) -> Optional[str]:
+    """보고서 이름을 받아서 REPORT_CODES의 키를 반환합니다."""
+    for key, value in REPORT_CODES.items():
+        if value['name'] == report_name:
+            return key
+    return None
+
 def select_report_type() -> str:
     """사용자가 보고서 유형을 선택하도록 합니다."""
     print("\n=== 보고서 유형 선택 ===")
@@ -341,15 +366,23 @@ def save_notes_to_files(result: Dict, company_name: str, year: str, report_type:
         # 출력 디렉토리 생성
         output_dir.mkdir(exist_ok=True)
         
+        # 보고서 타입이 키인지 이름인지 확인하고 이름 추출
+        if report_type in REPORT_CODES:
+            # 키인 경우
+            report_type_name = REPORT_CODES[report_type]['name']
+        else:
+            # 이름인 경우
+            report_type_name = report_type
+        
         # HTML 파일 저장
-        html_filename = output_dir / f"{company_name}_{year}_{REPORT_CODES[report_type]['name']}_연결재무제표주석.html"
+        html_filename = output_dir / f"{company_name}_{year}_{report_type_name}_연결재무제표주석.html"
         with open(html_filename, 'w', encoding='utf-8') as f:
             f.write(f"""<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{company_name} {year}년 {REPORT_CODES[report_type]['name']} 연결재무제표 주석</title>
+    <title>{company_name} {year}년 {report_type_name} 연결재무제표 주석</title>
     <style>
         body {{ font-family: 'Malgun Gothic', '맑은 고딕', sans-serif; margin: 20px; line-height: 1.6; }}
         .header {{ background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }}
@@ -364,10 +397,10 @@ def save_notes_to_files(result: Dict, company_name: str, year: str, report_type:
 </head>
 <body>
     <div class="header">
-        <h1>📊 {company_name} {year}년 {REPORT_CODES[report_type]['name']} 연결재무제표 주석</h1>
+        <h1>📊 {company_name} {year}년 {report_type_name} 연결재무제표 주석</h1>
         <p><strong>🏢 회사명:</strong> {company_name}</p>
         <p><strong>📅 연도:</strong> {year}</p>
-        <p><strong>📋 보고서 유형:</strong> {REPORT_CODES[report_type]['name']}</p>
+        <p><strong>📋 보고서 유형:</strong> {report_type_name}</p>
         <p><strong>🔢 접수번호:</strong> {result['rcept_no']}</p>
         <p><strong>📅 접수일자:</strong> {result['rcept_dt']}</p>
         <p><strong>📝 주석 제목:</strong> {result['notes_title']}</p>
@@ -387,19 +420,19 @@ def save_notes_to_files(result: Dict, company_name: str, year: str, report_type:
         print(f"✅ HTML 파일 저장 완료: {html_filename}")
         
         # 텍스트 파일도 저장
-        text_filename = output_dir / f"{company_name}_{year}_{REPORT_CODES[report_type]['name']}_연결재무제표주석.txt"
-        with open(text_filename, 'w', encoding='utf-8') as f:
-            f.write(f"회사명: {company_name}\n")
-            f.write(f"연도: {year}\n")
-            f.write(f"보고서 유형: {REPORT_CODES[report_type]['name']}\n")
-            f.write(f"접수번호: {result['rcept_no']}\n")
-            f.write(f"접수일자: {result['rcept_dt']}\n")
-            f.write(f"주석 제목: {result['notes_title']}\n")
-            f.write(f"주석 URL: {result['notes_url']}\n")
-            f.write(f"{'='*80}\n\n")
-            f.write(result['text_content'])
+        # text_filename = output_dir / f"{company_name}_{year}_{report_type_name}_연결재무제표주석.txt"
+        # with open(text_filename, 'w', encoding='utf-8') as f:
+        #     f.write(f"회사명: {company_name}\n")
+        #     f.write(f"연도: {year}\n")
+        #     f.write(f"보고서 유형: {report_type_name}\n")
+        #     f.write(f"접수번호: {result['rcept_no']}\n")
+        #     f.write(f"접수일자: {result['rcept_dt']}\n")
+        #     f.write(f"주석 제목: {result['notes_title']}\n")
+        #     f.write(f"주석 URL: {result['notes_url']}\n")
+        #     f.write(f"{'='*80}\n\n")
+        #     f.write(result['text_content'])
         
-        print(f"✅ 텍스트 파일 저장 완료: {text_filename}")
+        # print(f"✅ 텍스트 파일 저장 완료: {text_filename}")
         
         return True
         
@@ -407,8 +440,102 @@ def save_notes_to_files(result: Dict, company_name: str, year: str, report_type:
         print(f"❌ 파일 저장 실패: {e}")
         return False
 
+def process_companies_from_config(config_file: str = "companies_config.json") -> bool:
+    """JSON 설정 파일을 읽어서 여러 기업의 데이터를 일괄 처리합니다."""
+    try:
+        # JSON 설정 파일 로드
+        with open(config_file, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+        
+        companies = config.get('companies', [])
+        if not companies:
+            print("❌ 설정 파일에 처리할 기업이 없습니다.")
+            return False
+        
+        print(f"✅ 설정 파일 로드 완료: {len(companies)}개 기업")
+        print("🚀 DART 연결재무제표 주석 일괄 크롤링 시작")
+        print("=" * 60)
+        
+        success_count = 0
+        total_count = len(companies)
+        
+        for i, company_info in enumerate(companies, 1):
+            company_name = company_info.get('company_name')
+            year = company_info.get('year')
+            report_type_name = company_info.get('report_type')
+            
+            print(f"\n📋 [{i}/{total_count}] {company_name} {year} {report_type_name} 처리 중...")
+            print("-" * 50)
+            
+            # 보고서 타입 이름을 키로 변환
+            report_type_key = get_report_type_key(report_type_name)
+            if not report_type_key:
+                print(f"❌ 지원하지 않는 보고서 타입입니다: {report_type_name}")
+                continue
+            
+            # 연결재무제표 주석 조회
+            result = get_consolidated_financial_notes(company_name, year, report_type_key)
+            
+            if result:
+                # 자동으로 파일 저장 (일괄 처리에서는 사용자 입력 없이 저장)
+                if save_notes_to_files(result, company_name, year, report_type_name):
+                    print(f"✅ {company_name} 처리 완료")
+                    success_count += 1
+                else:
+                    print(f"❌ {company_name} 파일 저장 실패")
+            else:
+                print(f"❌ {company_name} 데이터 조회 실패")
+        
+        print(f"\n📊 크롤링 결과: {success_count}/{total_count}개 기업 성공")
+        return success_count == total_count
+        
+    except FileNotFoundError:
+        print(f"❌ 설정 파일을 찾을 수 없습니다: {config_file}")
+        return False
+    except json.JSONDecodeError:
+        print(f"❌ 설정 파일 형식이 올바르지 않습니다: {config_file}")
+        return False
+    except Exception as e:
+        print(f"❌ 일괄 처리 중 오류 발생: {e}")
+        return False
+
 def main():
     """메인 실행 함수"""
+    config_file = "companies_config.json"
+    
+    # JSON 설정 파일이 있으면 일괄 처리, 없으면 대화형 모드
+    if Path(config_file).exists():
+        print("📄 JSON 설정 파일이 발견되었습니다.")
+        mode_choice = input("🔧 실행 모드를 선택하세요 (1: 일괄처리, 2: 대화형): ")
+        
+        if mode_choice == "1":
+            # 일괄 처리 모드
+            crawling_success = process_companies_from_config(config_file)
+            
+            if crawling_success:
+                print("\n🎉 모든 기업의 크롤링이 완료되었습니다!")
+                
+                # 자동으로 표 데이터 추출 실행
+                print("\n🔄 표 데이터 추출을 자동으로 시작합니다...")
+                try:
+                    # table_extractor의 main 함수를 직접 호출
+                    from table_extractor import BatchTableExtractor
+                    batch_extractor = BatchTableExtractor("companies_config.json")
+                    if batch_extractor.load_config():
+                        success = batch_extractor.process_all_companies()
+                        if success:
+                            print("✅ 표 데이터 추출이 완료되었습니다!")
+                        else:
+                            print("⚠️ 일부 표 데이터 추출에 실패했습니다.")
+                    else:
+                        print("❌ 표 데이터 추출 설정 로드에 실패했습니다.")
+                except Exception as e:
+                    print(f"❌ 표 데이터 추출 실행 실패: {e}")
+            else:
+                print("\n⚠️ 일부 기업의 크롤링에 실패했습니다.")
+            return
+    
+    # 대화형 모드 (기존 기능)
     print("🚀 DART 연결재무제표 주석 크롤러")
     print("=" * 50)
     
@@ -431,7 +558,23 @@ def main():
         # 파일로 저장할지 묻기
         save_choice = input(f"\n💾 주석 내용을 파일로 저장하시겠습니까? (y/n): ").lower()
         if save_choice in ['y', 'yes', 'ㅇ']:
-            save_notes_to_files(result, company_name, year, report_type)
+            if save_notes_to_files(result, company_name, year, report_type):
+                # 자동으로 표 데이터 추출 실행
+                print("\n🔄 표 데이터 추출을 자동으로 시작합니다...")
+                try:
+                    # table_extractor의 함수를 직접 호출
+                    from table_extractor import TableExtractor
+                    # 보고서 타입 키를 이름으로 변환
+                    report_type_name = REPORT_CODES[report_type]['name']
+                    html_file = f"result/{company_name}_{year}_{report_type_name}_연결재무제표주석.html"
+                    extractor = TableExtractor(html_file)
+                    success = extractor.extract_all_tables()
+                    if success:
+                        print("✅ 표 데이터 추출이 완료되었습니다!")
+                    else:
+                        print("❌ 표 데이터 추출에 실패했습니다.")
+                except Exception as e:
+                    print(f"❌ 표 데이터 추출 실행 실패: {e}")
     else:
         print(f"\n❌ 연결재무제표 주석을 가져올 수 없습니다.")
 

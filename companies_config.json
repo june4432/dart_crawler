@@ -1,0 +1,46 @@
+{
+  "companies": [
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2024",
+      "report_type": "1분기보고서",
+      "description": "한솔피엔에스 2024년 1분기보고서 연결재무제표주석"
+    },
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2024",
+      "report_type": "반기보고서",
+      "description": "한솔피엔에스 2024년 반기보고서 연결재무제표주석"
+    },
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2024",
+      "report_type": "3분기보고서",
+      "description": "한솔피엔에스 2024년 3분기보고서 연결재무제표주석"
+    },
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2024",
+      "report_type": "사업보고서",
+      "description": "한솔피엔에스 2024년 사업보고서 연결재무제표주석"
+    },
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2025",
+      "report_type": "1분기보고서",
+      "description": "한솔피엔에스 2025년 1분기보고서 연결재무제표주석"
+    },
+    {
+      "company_name": "한솔피엔에스",
+      "year": "2025",
+      "report_type": "반기보고서",
+      "description": "한솔피엔에스 2025년 반기보고서 연결재무제표주석"
+    }
+  ],
+  "extraction_config": {
+    "target_sections": ["1. 지배기업의 개요"],
+    "subsections": ["(1)", "(2)", "(3)", "(4)", "(5)", "(6)", "(7)"],
+    "output_format": "csv",
+    "encoding": "utf-8-sig"
+  }
+}
