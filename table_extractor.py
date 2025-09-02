@@ -396,10 +396,177 @@ class TableExtractor:
     
     def should_pivot_table(self, section_name: str, section_title: str) -> bool:
         """표를 피벗해야 하는지 판단합니다."""
-        # 7번 항목이고 특정 키워드가 있으면 피벗
+        # 7번 항목이고 특정 키워드가 있으면 피벗 (단, 병합 전에만)
         if section_name.strip('()') == '7' and ('비지배지분과의 거래' in section_title or '자본에 미치는 영향' in section_title):
             return True
         return False
+    
+    def should_merge_performance_tables(self, all_sections: Dict[str, List]) -> bool:
+        """4,5,7번 성과 관련 표들을 병합해야 하는지 판단합니다."""
+        target_sections = {'4', '5', '7'}
+        found_sections = set(all_sections.keys())
+        return target_sections.issubset(found_sections)
+    
+    def should_merge_equity_tables(self, all_sections: Dict[str, List]) -> bool:
+        """6번 비지배지분 표들을 병합해야 하는지 판단합니다."""
+        return '6' in all_sections and len(all_sections['6']) > 1
+    
+    def merge_equity_tables(self, section_6_data: List[Dict]) -> List[Dict]:
+        """6번 항목의 표들을 병합합니다."""
+        if len(section_6_data) < 2:
+            return section_6_data
+        
+        # 두 표를 기간별로 분석
+        table_1 = section_6_data[0]  # 당반기말 및 당반기
+        table_2 = section_6_data[1]  # 전기말 및 전기
+        
+        # 공통 헤더 찾기 (기타변동까지)
+        headers_1 = table_1['headers']
+        headers_2 = table_2['headers']
+        
+        # 공통 부분 찾기
+        common_headers = []
+        diff_headers_1 = []
+        diff_headers_2 = []
+        
+        # 기타변동까지 공통으로 가정
+        common_count = 0
+        for i, (h1, h2) in enumerate(zip(headers_1, headers_2)):
+            if h1 == h2:
+                common_headers.append(h1)
+                common_count = i + 1
+            else:
+                break
+        
+        # 차이나는 부분
+        diff_headers_1 = headers_1[common_count:]  # 연결범위의 변동, 반기말 비지배지분
+        diff_headers_2 = headers_2[common_count:]  # 전기말 비지배지분
+        
+        # 통합된 헤더 생성: 공통 + 모든 고유 헤더들 
+        merged_headers = common_headers + diff_headers_1 + diff_headers_2
+        
+        # 데이터 행들 생성
+        row_1 = table_1['rows'][0] if table_1['rows'] else []
+        row_2 = table_2['rows'][0] if table_2['rows'] else []
+        
+        # 첫 번째 행: 당반기 데이터 (전기말 비지배지분은 빈값)
+        merged_row_1 = row_1[:common_count] + row_1[common_count:] + [''] * len(diff_headers_2)
+        
+        # 두 번째 행: 전기 데이터 (연결범위의 변동, 반기말 비지배지분은 빈값)
+        merged_row_2 = row_2[:common_count] + [''] * len(diff_headers_1) + row_2[common_count:]
+        
+        # 병합된 표 데이터 생성 - 각 행의 원래 기간구분 유지
+        merged_table = {
+            'section_title': '당반기말 및 전기말의 연결대상 종속기업에 대한 비지배지분의 몫',
+            'period': None,  # 행별로 다른 기간이므로 None으로 설정
+            'headers': merged_headers,
+            'raw_headers': merged_headers, 
+            'unit': table_1.get('unit', ''),
+            'rows': [
+                {'data': merged_row_1, 'period': table_1['period']},  # 원래 기간구분 유지
+                {'data': merged_row_2, 'period': table_2['period']}   # 원래 기간구분 유지
+            ]
+        }
+        
+        return [merged_table]
+    
+    def merge_performance_tables(self, section_4_data: List[Dict], section_5_data: List[Dict], section_7_data: List[Dict]) -> List[Dict]:
+        """4,5,7번 항목의 표들을 기간구분별로 병합합니다."""
+        merged_tables = {}
+        
+        # 모든 표 데이터를 기간구분별로 그룹화
+        all_tables = []
+        
+        # 4번 데이터 추가
+        for table in section_4_data:
+            table['source_section'] = '4'
+            all_tables.append(table)
+        
+        # 5번 데이터 추가
+        for table in section_5_data:
+            table['source_section'] = '5'
+            all_tables.append(table)
+        
+        # 7번 데이터 추가 (이미 피벗됨)
+        for table in section_7_data:
+            table['source_section'] = '7'
+            all_tables.append(table)
+        
+        # 기간구분별로 그룹화
+        period_groups = {}
+        for table in all_tables:
+            period = table['period']
+            if period not in period_groups:
+                period_groups[period] = []
+            period_groups[period].append(table)
+        
+        # 각 기간별로 병합
+        merged_result = []
+        for period, tables in period_groups.items():
+            # 병합된 헤더와 데이터 생성
+            merged_headers = []
+            merged_values = []
+            base_table = tables[0]
+            
+            # 7번 항목의 헤더를 미리 수집 (모든 기간에 동일하게 적용하기 위해)
+            section_7_headers = []
+            for table in tables:
+                if table.get('source_section') == '7':
+                    section_7_headers = table['headers']
+                    break
+            
+            # 7번 헤더가 없으면 전체 테이블에서 찾기
+            if not section_7_headers:
+                for period_tables in period_groups.values():
+                    for table in period_tables:
+                        if table.get('source_section') == '7':
+                            section_7_headers = table['headers']
+                            break
+                    if section_7_headers:
+                        break
+            
+            first_section_processed = False
+            for table in tables:
+                if table.get('source_section') == '7':
+                    # 7번 데이터가 있는 기간
+                    merged_headers.extend(table['headers'])
+                    if table['rows']:
+                        merged_values.extend(table['rows'][0])
+                    else:
+                        merged_values.extend([''] * len(table['headers']))
+                else:
+                    # 4,5번 일반 처리 - 첫 번째 섹션 이후로는 구분 컬럼 제거
+                    headers_to_add = table['headers']
+                    values_to_add = table['rows'][0] if table['rows'] else [''] * len(table['headers'])
+                    
+                    if first_section_processed:
+                        # 두 번째 섹션부터는 첫 번째 컬럼(구분) 제거
+                        if headers_to_add and headers_to_add[0] == '구분':
+                            headers_to_add = headers_to_add[1:]
+                            values_to_add = values_to_add[1:] if values_to_add else []
+                    
+                    merged_headers.extend(headers_to_add)
+                    merged_values.extend(values_to_add)
+                    first_section_processed = True
+            
+            # 7번 헤더가 아직 추가되지 않았으면 빈 값으로 추가 (전반기 등)
+            if section_7_headers and not any(table.get('source_section') == '7' for table in tables):
+                merged_headers.extend(section_7_headers)
+                merged_values.extend([''] * len(section_7_headers))
+            
+            # 병합된 표 데이터 생성
+            merged_table = {
+                'section_title': '연결대상 종속기업의 종합 경영성과',  # 통합 제목
+                'period': period,
+                'headers': merged_headers,
+                'raw_headers': merged_headers,
+                'unit': base_table.get('unit', ''),
+                'rows': [merged_values] if merged_values else []
+            }
+            
+            merged_result.append(merged_table)
+        
+        return merged_result
     
     def pivot_table_data(self, tables_data: List[Dict]) -> List[Dict]:
         """세로 형태의 표를 가로로 피벗합니다."""
@@ -503,6 +670,10 @@ class TableExtractor:
                     # 항목번호에서 괄호 제거: (1) → 1
                     item_number = section_name.strip('()')
                     
+                    # 병합된 4,5,7번 데이터는 모두 4번으로 통일
+                    if section_title == '연결대상 종속기업의 종합 경영성과':
+                        item_number = '4'
+                    
                     # 단위 정보 사용 (표에서 직접 추출된 것)
                     unit = table.get('unit', '')
                     
@@ -524,13 +695,28 @@ class TableExtractor:
                     
                     # 데이터 행들 추가
                     for row in rows:
-                        # 헤더 개수에 맞춰 행 데이터 조정
-                        adjusted_row = row[:len(headers)] if headers else row
-                        while len(adjusted_row) < len(headers):
-                            adjusted_row.append("")
-                        
-                        data_row = [company, year, report_type, item_number, section_title, period, unit] + adjusted_row
-                        csv_rows.append(data_row)
+                        # 6번 병합된 데이터의 경우 각 행별 기간구분 처리
+                        if isinstance(row, dict) and 'data' in row and 'period' in row:
+                            # 6번 병합된 데이터
+                            row_data = row['data']
+                            row_period = row['period']
+                            
+                            # 헤더 개수에 맞춰 행 데이터 조정
+                            adjusted_row = row_data[:len(headers)] if headers else row_data
+                            while len(adjusted_row) < len(headers):
+                                adjusted_row.append("")
+                            
+                            data_row = [company, year, report_type, item_number, section_title, row_period, unit] + adjusted_row
+                            csv_rows.append(data_row)
+                        else:
+                            # 일반 데이터
+                            # 헤더 개수에 맞춰 행 데이터 조정
+                            adjusted_row = row[:len(headers)] if headers else row
+                            while len(adjusted_row) < len(headers):
+                                adjusted_row.append("")
+                            
+                            data_row = [company, year, report_type, item_number, section_title, period, unit] + adjusted_row
+                            csv_rows.append(data_row)
         
         except Exception as e:
             print(f"❌ CSV 형식 변환 실패: {e}")
@@ -576,17 +762,60 @@ class TableExtractor:
         
         # 4. 각 섹션별로 표 추출
         all_csv_data = []
+        all_sections_data = {}  # 모든 섹션 데이터 저장
         
         for section_name, section_elements in sections.items():
             print(f"\n📋 {section_name} 섹션 처리 중...")
             
             tables_data = self.extract_table_title_and_data(section_name, section_elements)
             if tables_data:
-                csv_data = self.convert_to_csv_format(section_name, tables_data)
-                all_csv_data.extend(csv_data)
-                print(f"   ✅ {len(tables_data)}개 표에서 {len(csv_data)}행 추출")
+                all_sections_data[section_name.strip('()')] = tables_data
+                print(f"   ✅ {len(tables_data)}개 표 추출 완료")
             else:
                 print(f"   ❌ {section_name}에서 표를 찾을 수 없습니다.")
+        
+        # 4,5,7번 병합 처리
+        if self.should_merge_performance_tables(all_sections_data):
+            print(f"\n🔄 4,5,7번 항목 병합 처리 중...")
+            
+            # 7번 먼저 피벗 처리
+            if '7' in all_sections_data:
+                section_7_name = '(7)'
+                if self.should_pivot_table(section_7_name, all_sections_data['7'][0]['section_title']):
+                    all_sections_data['7'] = self.pivot_table_data(all_sections_data['7'])
+            
+            # 4,5,7번 병합
+            merged_tables = self.merge_performance_tables(
+                all_sections_data.get('4', []),
+                all_sections_data.get('5', []),
+                all_sections_data.get('7', [])
+            )
+            
+            # 병합된 데이터를 4번으로 추가하고 5,7번은 제거
+            all_sections_data['4'] = merged_tables
+            all_sections_data.pop('5', None)
+            all_sections_data.pop('7', None)
+            
+            print(f"   ✅ 병합 완료: {len(merged_tables)}개 통합 표 생성")
+        
+        # 6번 비지배지분 병합 처리
+        if self.should_merge_equity_tables(all_sections_data):
+            print(f"\n🔄 6번 항목 병합 처리 중...")
+            
+            merged_equity_tables = self.merge_equity_tables(all_sections_data['6'])
+            all_sections_data['6'] = merged_equity_tables
+            
+            print(f"   ✅ 6번 병합 완료: {len(merged_equity_tables)}개 통합 표 생성")
+        
+        # CSV 변환
+        for section_num, tables_data in all_sections_data.items():
+            section_name = f"({section_num})"
+            
+            # 7번이 이미 병합되었으면 피벗 건너뛰기
+            if section_num != '7':  # 7번은 이미 병합되었거나 제거됨
+                csv_data = self.convert_to_csv_format(section_name, tables_data)
+                all_csv_data.extend(csv_data)
+                print(f"   📄 {section_name} → {len(csv_data)}행 CSV 변환")
         
         # 5. CSV 파일 저장
         if all_csv_data:
