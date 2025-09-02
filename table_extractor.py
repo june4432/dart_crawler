@@ -234,6 +234,7 @@ class TableExtractor:
             # 헤더 추출 (배경색이 회색인 행들)
             header_rows = table_element.find_all('tr')
             data_started = False
+            header_structure = []  # 헤더 구조 정보 저장
             
             for tr in header_rows:
                 cells = tr.find_all(['td', 'th'])
@@ -251,20 +252,18 @@ class TableExtractor:
                 
                 # 헤더인지 데이터인지 판별 (배경색 체크)
                 is_header = False
-                row_data = []
-                raw_row_data = []
+                row_info = []  # 각 셀의 정보 저장
                 
                 for cell in cells:
-                    # 원본 텍스트 (단위 추출용) - clean_text 적용 안함
+                    # 원본 텍스트 
                     raw_cell_text = cell.get_text().strip()
-                    # HTML 엔터티만 디코딩
                     raw_cell_text = html.unescape(raw_cell_text)
                     raw_cell_text = re.sub(r'\s+', ' ', raw_cell_text).strip()
                     
-                    # 정리된 텍스트 (최종 헤더용) - 단위 정보 제거
+                    # 정리된 텍스트
                     cell_text = self.clean_text(raw_cell_text)
                     
-                    # colspan, rowspan 처리
+                    # colspan, rowspan 정보
                     colspan = int(cell.get('colspan', 1))
                     rowspan = int(cell.get('rowspan', 1))
                     
@@ -273,32 +272,26 @@ class TableExtractor:
                     if 'background-color:#D7D7D7' in style or cell.name == 'th':
                         is_header = True
                     
-                    # colspan만큼 셀 추가
-                    for _ in range(colspan):
-                        row_data.append(cell_text)
-                        raw_row_data.append(raw_cell_text)
+                    # 셀 정보 저장
+                    row_info.append({
+                        'text': cell_text,
+                        'raw_text': raw_cell_text,
+                        'colspan': colspan,
+                        'rowspan': rowspan
+                    })
                 
-                if row_data:
-                    if is_header and not data_started:
-                        # 헤더가 여러 행일 수 있으므로 병합
-                        if not headers:
-                            headers = row_data
-                            raw_headers = raw_row_data
-                        else:
-                            # 헤더 행 병합 로직
-                            for i, cell in enumerate(row_data):
-                                if i < len(headers) and cell.strip():
-                                    if headers[i].strip():
-                                        headers[i] += f"_{cell}"
-                                        raw_headers[i] += f"_{raw_row_data[i] if i < len(raw_row_data) else ''}"
-                                    else:
-                                        headers[i] = cell
-                                        if i < len(raw_headers):
-                                            raw_headers[i] = raw_row_data[i] if i < len(raw_row_data) else ''
-                    else:
-                        data_started = True
-                        if len(row_data) > 1:  # 의미있는 데이터 행만
-                            rows.append(row_data)
+                if is_header and not data_started:
+                    header_structure.append(row_info)
+                elif row_info and not is_header:
+                    data_started = True
+                    # 데이터 행 처리
+                    row_data = [cell['text'] for cell in row_info]
+                    if len(row_data) > 1:
+                        rows.append(row_data)
+            
+            # 헤더 구조를 분석하여 최종 헤더 생성
+            if header_structure:
+                headers, raw_headers = self.build_final_headers(header_structure)
             
             if headers and rows:
                 return {
@@ -312,6 +305,64 @@ class TableExtractor:
             print(f"❌ 표 내용 추출 실패: {e}")
         
         return None
+    
+    def build_final_headers(self, header_structure):
+        """헤더 구조를 분석하여 최종 헤더를 생성합니다."""
+        if not header_structure:
+            return [], []
+        
+        # 첫 번째 행의 구조를 기반으로 최종 컬럼 수 계산
+        first_row = header_structure[0]
+        total_cols = sum(cell['colspan'] for cell in first_row)
+        
+        # 최종 헤더 배열 초기화
+        final_headers = [''] * total_cols
+        final_raw_headers = [''] * total_cols
+        
+        # 첫 번째 헤더 행 처리
+        col_idx = 0
+        for cell in first_row:
+            text = cell['text']
+            raw_text = cell['raw_text']
+            colspan = cell['colspan']
+            
+            if colspan == 1:
+                # rowspan인 경우 해당 위치에 직접 설정
+                final_headers[col_idx] = text
+                final_raw_headers[col_idx] = raw_text
+            else:
+                # colspan인 경우 기본 텍스트만 저장 (나중에 두 번째 행과 병합)
+                for i in range(colspan):
+                    if col_idx + i < total_cols:
+                        final_headers[col_idx + i] = text  # 임시로 기본 텍스트 저장
+                        final_raw_headers[col_idx + i] = raw_text
+            
+            col_idx += colspan
+        
+        # 두 번째 헤더 행이 있으면 병합 처리
+        if len(header_structure) > 1:
+            second_row = header_structure[1]
+            
+            # 두 번째 행의 셀들을 첫 번째 행의 colspan 영역과 매핑
+            second_col_idx = 0
+            for i, cell in enumerate(first_row):
+                if cell['colspan'] > 1:
+                    # colspan 영역에 두 번째 행 데이터 병합
+                    for j in range(cell['colspan']):
+                        if second_col_idx < len(second_row):
+                            base_text = cell['text']
+                            sub_text = second_row[second_col_idx]['text']
+                            
+                            # 최종 위치 계산
+                            final_pos = sum(prev_cell['colspan'] for prev_cell in first_row[:i]) + j
+                            
+                            if final_pos < total_cols:
+                                final_headers[final_pos] = f"{base_text}_{sub_text}"
+                                final_raw_headers[final_pos] = f"{cell['raw_text']}_{second_row[second_col_idx]['raw_text']}"
+                            
+                            second_col_idx += 1
+        
+        return final_headers, final_raw_headers
     
     def clean_text(self, text: str) -> str:
         """텍스트를 정리합니다."""
@@ -343,11 +394,66 @@ class TableExtractor:
         
         return ""
     
+    def should_pivot_table(self, section_name: str, section_title: str) -> bool:
+        """표를 피벗해야 하는지 판단합니다."""
+        # 7번 항목이고 특정 키워드가 있으면 피벗
+        if section_name.strip('()') == '7' and ('비지배지분과의 거래' in section_title or '자본에 미치는 영향' in section_title):
+            return True
+        return False
+    
+    def pivot_table_data(self, tables_data: List[Dict]) -> List[Dict]:
+        """세로 형태의 표를 가로로 피벗합니다."""
+        if not tables_data:
+            return tables_data
+        
+        # 모든 표에서 데이터 수집
+        all_rows = []
+        for table in tables_data:
+            all_rows.extend(table['rows'])
+        
+        if not all_rows:
+            return tables_data
+        
+        # 첫 번째 표 정보 사용
+        base_table = tables_data[0]
+        
+        # 피벗된 헤더 생성: [각 행의 첫 번째 컬럼 값들] (구분 컬럼 제거)
+        pivot_headers = []
+        pivot_values = []
+        
+        # 각 행에서 첫 번째 컬럼(구분)과 두 번째 컬럼(값) 추출
+        for row in all_rows:
+            if len(row) >= 2:
+                category = row[0]  # 구분 (예: 취득한 비지배지분의 장부금액)
+                value = row[1]     # 값 (예: 19,818)
+                
+                pivot_headers.append(category)
+                pivot_values.append(value)
+        
+        # 피벗된 데이터 행 생성 (구분 컬럼 없이)
+        pivot_row = pivot_values
+        
+        # 새로운 표 데이터 구조 생성
+        pivoted_table = {
+            'section_title': base_table['section_title'],
+            'period': '당반기',  # 기간구분을 당반기로 설정
+            'headers': pivot_headers,
+            'raw_headers': pivot_headers,  # 같은 값 사용
+            'unit': base_table['unit'],
+            'rows': [pivot_row]
+        }
+        
+        return [pivoted_table]
+
     def convert_to_csv_format(self, section_name: str, tables_data: List[Dict]) -> List[List[str]]:
         """표 데이터를 CSV 형식으로 변환합니다."""
         csv_rows = []
         
         try:
+            # 피벗이 필요한지 확인
+            if tables_data and self.should_pivot_table(section_name, tables_data[0]['section_title']):
+                tables_data = self.pivot_table_data(tables_data)
+            
             # 같은 항목의 표들을 그룹화
             grouped_tables = {}
             
